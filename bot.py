@@ -54,4 +54,8 @@ def slack_events():
 
     return make_response("OK", 200)
 
+# Run the app when this script is executed
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
 
