@@ -13,6 +13,10 @@ signature_verifier = SignatureVerifier(os.environ["SLACK_SIGNING_SECRET"])
 # Define what questions your bot should respond to
 TRIGGER_KEYWORDS = ["vacation policy", "pto", "time off", "leave policy"]
 
+@app.route("/", methods=["GET"])
+def index():
+    return "OK", 200
+
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
     if not signature_verifier.is_valid_request(request.get_data(), request.headers):
