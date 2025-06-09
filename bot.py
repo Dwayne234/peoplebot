@@ -58,8 +58,18 @@ def slack_events():
 
     return make_response("OK", 200)
 
-# Run the app when this script is executed
+# New endpoint for DigitalOcean AI Agent integration
+@app.route("/agent", methods=["POST"])
+def agent():
+    data = request.json
+    question = data.get("question", "")
+
+    # Simulated AI response for now — later connect this to real GenAI
+    answer = f"(Placeholder answer for: '{question}')"
+
+    return make_response({"answer": answer}, 200)
+
+# Run the app
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
 
