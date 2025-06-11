@@ -1,68 +1,71 @@
 import os
+import logging
 import requests
+from flask import Flask, request, jsonify
 from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
-from flask import Flask, request
 
-# Environment Variables
+# Load environment variables
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 DO_AI_API_KEY = os.getenv("DO_AI_API_KEY")
 DO_AI_ENDPOINT = os.getenv("DO_AI_ENDPOINT")
 
-# Slack App Initialization
-app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
+# Validate environment
+if not SLACK_BOT_TOKEN or not SLACK_SIGNING_SECRET or not DO_AI_API_KEY or not DO_AI_ENDPOINT:
+    raise ValueError("Missing environment variables.")
 
-# Flask Server
-flask_app = Flask(__name__)
+# Slack App setup
+app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 handler = SlackRequestHandler(app)
 
-# Listen for mentions in thread
+# Flask App
+flask_app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+
 @app.event("app_mention")
-def handle_mention_events(body, say, logger):
+def handle_app_mention(body, say):
     try:
-        event = body.get("event", {})
-        user = event.get("user")
-        thread_ts = event.get("thread_ts") or event.get("ts")
-        text = event.get("text")
+        user = body["event"]["user"]
+        thread_ts = body["event"].get("thread_ts") or body["event"]["ts"]
+        user_message = body["event"]["text"]
 
         say(text=":mag: Processing your request...", thread_ts=thread_ts)
 
-        prompt = text.replace(f"<@{event.get('bot_id', '')}>", "").strip()
-
+        # Send message to DigitalOcean AI Agent
         headers = {
             "Authorization": f"Bearer {DO_AI_API_KEY}",
             "Content-Type": "application/json",
         }
+        payload = {
+            "input": user_message,
+        }
 
-        response = requests.post(
-            f"{DO_AI_ENDPOINT}/invoke",
-            headers=headers,
-            json={"input": prompt},
-            timeout=30
-        )
+        response = requests.post(DO_AI_ENDPOINT, headers=headers, json=payload)
 
         if response.status_code == 200:
-            ai_response = response.json().get("output", "No response from AI.")
-            say(text=ai_response, thread_ts=thread_ts)
+            ai_reply = response.json().get("output", "I'm not sure how to respond.")
+            say(text=ai_reply + " ☁️", thread_ts=thread_ts)
         else:
-            logger.error(f"AI error: {response.status_code} - {response.text}")
-            say(text=f":warning: Error contacting AI Agent: {response.status_code} - {response.reason}", thread_ts=thread_ts)
+            error_msg = f":warning: Error contacting AI Agent: {response.status_code} {response.reason}"
+            logging.error(error_msg)
+            say(text=error_msg, thread_ts=thread_ts)
 
     except Exception as e:
-        logger.error(f"Exception: {e}")
-        say(text=f":warning: An error occurred: {e}", thread_ts=thread_ts)
+        logging.exception("Unhandled exception in app_mention handler.")
+        say(text=":warning: Oops! Something went wrong. A People Team member will follow up. ☁️", thread_ts=thread_ts)
 
-# Flask route for Slack events
+# Slack route
 @flask_app.route("/slack/events", methods=["POST"])
 def slack_events():
     return handler.handle(request)
 
-# Flask health check endpoint
+# Health check route
 @flask_app.route("/", methods=["GET"])
 def health_check():
-    return "OK", 200
+    return jsonify({"status": "ok"})
 
-# Entry point for App Platform (use port 8080 and host 0.0.0.0)
+# Start Flask app on correct port for DO App Platform
 if __name__ == "__main__":
-    flask_app.run(host="0.0.0.0", port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
