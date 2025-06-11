@@ -1,16 +1,23 @@
 import os
+import json
+import requests
 from flask import Flask, request, make_response
 from slack_sdk.web import WebClient
 from slack_sdk.signature import SignatureVerifier
-import json
 
 app = Flask(__name__)
 
+# Slack credentials
 slack_token = os.environ["SLACK_BOT_TOKEN"]
+signing_secret = os.environ["SLACK_SIGNING_SECRET"]
 client = WebClient(token=slack_token)
-signature_verifier = SignatureVerifier(os.environ["SLACK_SIGNING_SECRET"])
+signature_verifier = SignatureVerifier(signing_secret)
 
-# Define what questions your bot should respond to
+# DO MCP AI Agent credentials from environment variables
+DO_AI_ENDPOINT = os.environ.get("DO_AI_ENDPOINT")
+DO_AI_API_KEY = os.environ.get("DO_AI_API_KEY")
+
+# Keywords to auto-answer with canned responses
 TRIGGER_KEYWORDS = ["vacation policy", "pto", "time off", "leave policy"]
 
 @app.route("/", methods=["GET"])
@@ -23,53 +30,60 @@ def slack_events():
         return make_response("Invalid request signature", 403)
 
     data = request.json
+
+    # Slack challenge verification
     if "challenge" in data:
         return make_response(data["challenge"], 200, {"content_type": "application/json"})
 
-    # Respond to messages
     if data.get("event", {}).get("type") == "app_mention":
         event = data["event"]
         user = event.get("user")
         channel = event.get("channel")
         thread_ts = event.get("ts")
-        text = event.get("text", "").lower()
+        text = event.get("text", "")
 
-        response_sent = False
-        for keyword in TRIGGER_KEYWORDS:
-            if keyword in text:
-                client.chat_postMessage(
-                    channel=channel,
-                    thread_ts=thread_ts,
-                    text=f"Hi <@{user}>! Here's what I found about *{keyword}*: … (custom answer)"
-                )
-                # ✅ Reaction = answered
-                client.reactions_add(channel=channel, name="white_check_mark", timestamp=thread_ts)
-                response_sent = True
-                break
+        # Ask DigitalOcean AI Agent
+        answer = ask_ai_agent(text)
 
-        if not response_sent:
+        if answer:
             client.chat_postMessage(
                 channel=channel,
                 thread_ts=thread_ts,
-                text=f"Hi <@{user}>! I'm not sure how to answer that yet. A People Team member will follow up shortly. ☁️"
+                text=f"Hi <@{user}>! Here's what I found:\n\n{answer}"
             )
-            # ☁️ Reaction = escalate to human
+            client.reactions_add(channel=channel, name="white_check_mark", timestamp=thread_ts)
+        else:
+            client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=f"Hi <@{user}>! I'm not sure how to answer that yet. A People Team member will follow up. ☁️"
+            )
             client.reactions_add(channel=channel, name="cloud", timestamp=thread_ts)
 
     return make_response("OK", 200)
 
-# New endpoint for DigitalOcean AI Agent integration
-@app.route("/agent", methods=["POST"])
-def agent():
-    data = request.json
-    question = data.get("question", "")
+def ask_ai_agent(question: str) -> str:
+    if not DO_AI_ENDPOINT or not DO_AI_API_KEY:
+        return "AI agent configuration is missing."
 
-    # Simulated AI response for now — later connect this to real GenAI
-    answer = f"(Placeholder answer for: '{question}')"
+    try:
+        headers = {
+            "Authorization": f"Bearer {DO_AI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {"input": question}
+        response = requests.post(DO_AI_ENDPOINT, headers=headers, json=payload)
 
-    return make_response({"answer": answer}, 200)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("output", "Sorry, I couldn’t understand that.")
+        else:
+            print(f"Error from AI Agent: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"Exception during AI call: {e}")
+        return None
 
 # Run the app
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
