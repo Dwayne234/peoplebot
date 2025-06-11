@@ -1,9 +1,8 @@
 import os
-import json
 import requests
-from flask import Flask, request, make_response
-from slack_sdk import WebClient
-from slack_sdk.signature import SignatureVerifier
+from slack_bolt import App
+from slack_bolt.adapter.flask import SlackRequestHandler
+from flask import Flask, request
 
 # Environment Variables
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
@@ -11,67 +10,59 @@ SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 DO_AI_API_KEY = os.getenv("DO_AI_API_KEY")
 DO_AI_ENDPOINT = os.getenv("DO_AI_ENDPOINT")
 
-# Slack client and signature verifier
-client = WebClient(token=SLACK_BOT_TOKEN)
-verifier = SignatureVerifier(SLACK_SIGNING_SECRET)
+# Slack App Initialization
+app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 
-# Flask app
-app = Flask(__name__)
+# Flask Server
+flask_app = Flask(__name__)
+handler = SlackRequestHandler(app)
 
-@app.route("/slack/events", methods=["POST"])
-def slack_events():
-    if not verifier.is_valid_request(request.get_data(), request.headers):
-        return make_response("Invalid request", 403)
-
-    payload = request.json
-    event = payload.get("event", {})
-
-    # Only respond to app_mention events
-    if event.get("type") == "app_mention":
+# Listen for mentions in thread
+@app.event("app_mention")
+def handle_mention_events(body, say, logger):
+    try:
+        event = body.get("event", {})
         user = event.get("user")
-        text = event.get("text")
-        channel = event.get("channel")
         thread_ts = event.get("thread_ts") or event.get("ts")
+        text = event.get("text")
 
-        # Respond to thread with thinking emoji
-        client.chat_postMessage(
-            channel=channel,
-            thread_ts=thread_ts,
-            text=":mag: Processing your request..."
+        say(text=":mag: Processing your request...", thread_ts=thread_ts)
+
+        prompt = text.replace(f"<@{event.get('bot_id', '')}>", "").strip()
+
+        headers = {
+            "Authorization": f"Bearer {DO_AI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        response = requests.post(
+            f"{DO_AI_ENDPOINT}/invoke",
+            headers=headers,
+            json={"input": prompt},
+            timeout=30
         )
 
-        # Strip bot mention from text
-        cleaned_text = text.split('>', 1)[-1].strip()
+        if response.status_code == 200:
+            ai_response = response.json().get("output", "No response from AI.")
+            say(text=ai_response, thread_ts=thread_ts)
+        else:
+            logger.error(f"AI error: {response.status_code} - {response.text}")
+            say(text=f":warning: Error contacting AI Agent: {response.status_code} - {response.reason}", thread_ts=thread_ts)
 
-        # Call DigitalOcean AI Agent
-        try:
-            response = requests.post(
-                DO_AI_ENDPOINT,
-                headers={
-                    "Authorization": f"Bearer {DO_AI_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={"input": cleaned_text}
-            )
-            response.raise_for_status()
-            result = response.json()
-            answer = result.get("output", "I'm not sure how to answer that yet. A People Team member will follow up. :cloud:")
+    except Exception as e:
+        logger.error(f"Exception: {e}")
+        say(text=f":warning: An error occurred: {e}", thread_ts=thread_ts)
 
-        except Exception as e:
-            answer = f":warning: Error contacting AI Agent: {str(e)}"
+# Flask route for Slack events
+@flask_app.route("/slack/events", methods=["POST"])
+def slack_events():
+    return handler.handle(request)
 
-        # Reply in the same thread
-        client.chat_postMessage(
-            channel=channel,
-            thread_ts=thread_ts,
-            text=answer
-        )
-
-    return make_response("", 200)
-
-@app.route("/", methods=["GET"])
+# Flask health check endpoint
+@flask_app.route("/", methods=["GET"])
 def health_check():
-    return "Bot is running!", 200
+    return "OK", 200
 
+# Entry point for App Platform (use port 8080 and host 0.0.0.0)
 if __name__ == "__main__":
-    app.run(debug=False, port=5000)
+    flask_app.run(host="0.0.0.0", port=8080)
