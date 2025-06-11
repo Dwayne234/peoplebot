@@ -1,89 +1,81 @@
 import os
-import json
-import requests
-from flask import Flask, request, make_response
-from slack_sdk.web import WebClient
+from flask import Flask, request, jsonify
+from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
+import requests
 
 app = Flask(__name__)
 
-# Slack credentials
-slack_token = os.environ["SLACK_BOT_TOKEN"]
-signing_secret = os.environ["SLACK_SIGNING_SECRET"]
-client = WebClient(token=slack_token)
-signature_verifier = SignatureVerifier(signing_secret)
+# Load from environment variables (set on App Platform)
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
+DO_AI_ENDPOINT = os.getenv("DO_AI_ENDPOINT")
+DO_AI_API_KEY = os.getenv("DO_AI_API_KEY")
 
-# DO MCP AI Agent credentials from environment variables
-DO_AI_ENDPOINT = os.environ.get("DO_AI_ENDPOINT")
-DO_AI_API_KEY = os.environ.get("DO_AI_API_KEY")
-
-# Keywords to auto-answer with canned responses
-TRIGGER_KEYWORDS = ["vacation policy", "pto", "time off", "leave policy"]
-
-@app.route("/", methods=["GET"])
-def index():
-    return "OK", 200
+client = WebClient(token=SLACK_BOT_TOKEN)
+verifier = SignatureVerifier(SLACK_SIGNING_SECRET)
 
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
-    if not signature_verifier.is_valid_request(request.get_data(), request.headers):
-        return make_response("Invalid request signature", 403)
+    if not verifier.is_valid_request(request.get_data(), request.headers):
+        return "Invalid request", 403
 
+    payload = request.json
+
+    # Echo back the Slack URL verification challenge
+    if "type" in payload and payload["type"] == "url_verification":
+        return jsonify({"challenge": payload["challenge"]})
+
+    # Handle message events
+    if "event" in payload:
+        event = payload["event"]
+        if event.get("type") == "message" and not event.get("bot_id"):
+            user_id = event.get("user")
+            thread_ts = event.get("thread_ts") or event.get("ts")
+            text = event.get("text")
+            channel = event.get("channel")
+
+            # Only respond if it's in a thread
+            if thread_ts != event.get("ts"):
+                # Call the /agent route
+                response = requests.post(
+                    "http://localhost:5000/agent",
+                    json={"text": text, "user_id": user_id}
+                )
+
+                result = response.json()
+                client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    text=f"{result['text']} ✅"
+                )
+
+    return "OK", 200
+
+@app.route("/agent", methods=["POST"])
+def agent():
     data = request.json
-
-    # Slack challenge verification
-    if "challenge" in data:
-        return make_response(data["challenge"], 200, {"content_type": "application/json"})
-
-    if data.get("event", {}).get("type") == "app_mention":
-        event = data["event"]
-        user = event.get("user")
-        channel = event.get("channel")
-        thread_ts = event.get("ts")
-        text = event.get("text", "")
-
-        # Ask DigitalOcean AI Agent
-        answer = ask_ai_agent(text)
-
-        if answer:
-            client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_ts,
-                text=f"Hi <@{user}>! Here's what I found:\n\n{answer}"
-            )
-            client.reactions_add(channel=channel, name="white_check_mark", timestamp=thread_ts)
-        else:
-            client.chat_postMessage(
-                channel=channel,
-                thread_ts=thread_ts,
-                text=f"Hi <@{user}>! I'm not sure how to answer that yet. A People Team member will follow up. ☁️"
-            )
-            client.reactions_add(channel=channel, name="cloud", timestamp=thread_ts)
-
-    return make_response("OK", 200)
-
-def ask_ai_agent(question: str) -> str:
-    if not DO_AI_ENDPOINT or not DO_AI_API_KEY:
-        return "AI agent configuration is missing."
+    user_message = data.get("text")
+    user_id = data.get("user_id")
 
     try:
-        headers = {
-            "Authorization": f"Bearer {DO_AI_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {"input": question}
-        response = requests.post(DO_AI_ENDPOINT, headers=headers, json=payload)
+        agent_response = requests.post(
+            DO_AI_ENDPOINT,
+            headers={"Authorization": f"Bearer {DO_AI_API_KEY}"},
+            json={"input": user_message}
+        )
 
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("output", "Sorry, I couldn’t understand that.")
+        agent_response.raise_for_status()
+        response_json = agent_response.json()
+        output = response_json.get("output", {})
+        answer = output.get("answer", "")
+
+        if answer:
+            return jsonify({"text": f"{answer}"})
         else:
-            print(f"Error from AI Agent: {response.status_code} - {response.text}")
-            return None
+            return jsonify({"text": f"Hi <@{user_id}>! I'm not sure how to answer that yet. A People Team member will follow up. :cloud:"})
     except Exception as e:
-        print(f"Exception during AI call: {e}")
-        return None
+        return jsonify({"text": f"Hi <@{user_id}>! There was an error contacting the AI Agent. :warning:\nError: {e}"})
 
-# Run the app
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
