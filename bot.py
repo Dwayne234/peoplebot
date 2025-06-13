@@ -60,12 +60,12 @@ def handle_app_mention(body, say):
 def slack_events():
     return handler.handle(request)
 
-# Health check route
-@flask_app.route("/", methods=["GET"])
+# Health check route (updated to accept GET & POST)
+@flask_app.route("/", methods=["GET", "POST"])
 def health_check():
-    return jsonify({"status": "ok"})
+    return "OK", 200
 
-# Start Flask app on correct port for DO App Platform
+# Start Flask app on port 8080 for DO App Platform
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host="0.0.0.0", port=port)
