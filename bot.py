@@ -35,6 +35,10 @@ def handle_app_mention(body, say):
         bot_user_id = body["authorizations"][0]["user_id"]
         cleaned_text = re.sub(f"<@{bot_user_id}>", "", raw_text).strip()
 
+        if not cleaned_text:
+            say(text=":warning: Please include a question or comment.", thread_ts=thread_ts)
+            return
+
         say(text=":mag: Processing your request...", thread_ts=thread_ts)
 
         # Send message to DigitalOcean Gen AI Agent
@@ -42,15 +46,18 @@ def handle_app_mention(body, say):
             "Authorization": f"Bearer {DO_AI_API_KEY}",
             "Content-Type": "application/json",
         }
+
         payload = {
-            "input": cleaned_text,
+            "messages": [
+                {"role": "user", "content": cleaned_text}
+            ]
         }
 
         response = requests.post(DO_AI_ENDPOINT, headers=headers, json=payload)
 
         if response.status_code == 200:
             response_data = response.json()
-            ai_reply = response_data.get("output") or response_data.get("message") or "I'm not sure how to respond."
+            ai_reply = response_data.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
             say(text=ai_reply + " ☁️", thread_ts=thread_ts)
         else:
             error_msg = f":warning: Error contacting AI Agent: {response.status_code} {response.reason}"
