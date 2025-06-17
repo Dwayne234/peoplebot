@@ -2,7 +2,7 @@ import os
 import logging
 import re
 import requests
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 
@@ -24,18 +24,6 @@ handler = SlackRequestHandler(app)
 flask_app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Emoji legend logic helper
-def select_emoji_for_response(text):
-    text_lower = text.lower()
-    if any(word in text_lower for word in ["processing", "thinking", "wait", "hold on"]):
-        return ":mag:"  # magnifying glass for thinking/processing
-    elif any(word in text_lower for word in ["human", "help", "verify", "check with"]):
-        return ":zap:"  # lightning bolt for human intervention needed
-    elif any(word in text_lower for word in ["error", "fail", "problem", "issue"]):
-        return ":warning:"  # warning for errors
-    else:
-        return ":speech_balloon:"  # speech balloon for normal replies
-
 @app.event("app_mention")
 def handle_app_mention(body, say):
     try:
@@ -47,33 +35,30 @@ def handle_app_mention(body, say):
         bot_user_id = body["authorizations"][0]["user_id"]
         cleaned_text = re.sub(f"<@{bot_user_id}>", "", raw_text).strip()
 
-        # Acknowledge request with magnifying glass emoji
+        if not cleaned_text:
+            say(text=":warning: Please include a question or comment.", thread_ts=thread_ts)
+            return
+
         say(text=":mag: Processing your request...", thread_ts=thread_ts)
 
-        # Prepare payload with required message history format
-        payload = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": cleaned_text
-                }
-            ]
-        }
-
+        # Send message to DigitalOcean Gen AI Agent
         headers = {
             "Authorization": f"Bearer {DO_AI_API_KEY}",
             "Content-Type": "application/json",
+        }
+
+        payload = {
+            "messages": [
+                {"role": "user", "content": cleaned_text}
+            ]
         }
 
         response = requests.post(DO_AI_ENDPOINT, headers=headers, json=payload)
 
         if response.status_code == 200:
             response_data = response.json()
-            # Extract AI reply - check likely fields
-            ai_reply = response_data.get("output") or response_data.get("message") or "I'm not sure how to respond."
-            # Choose emoji based on reply content
-            emoji = select_emoji_for_response(ai_reply)
-            say(text=f"{emoji} {ai_reply} ☁️", thread_ts=thread_ts)
+            ai_reply = response_data.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
+            say(text=ai_reply + " ☁️", thread_ts=thread_ts)
         else:
             error_msg = f":warning: Error contacting AI Agent: {response.status_code} {response.reason}"
             logging.error(f"{error_msg} — Response: {response.text}")
