@@ -2,7 +2,7 @@ import os
 import logging
 import re
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 
@@ -24,6 +24,20 @@ handler = SlackRequestHandler(app)
 flask_app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def classify_response(content):
+    """Add emojis based on AI response content"""
+    lower = content.lower()
+    if "i'm not sure" in lower or "unsure" in lower:
+        return ":speech_balloon: " + content + " :cloud:"
+    elif "please contact" in lower or "human" in lower or "escalate" in lower:
+        return ":zap: " + content + " :cloud:"
+    elif "congratulations" in lower or "thank you" in lower:
+        return ":confetti_ball: " + content + " :cloud:"
+    elif "policy" in lower or "benefit" in lower:
+        return ":page_facing_up: " + content + " :cloud:"
+    else:
+        return ":a: " + content + " :cloud:"
+
 @app.event("app_mention")
 def handle_app_mention(body, say):
     try:
@@ -41,24 +55,22 @@ def handle_app_mention(body, say):
 
         say(text=":mag: Processing your request...", thread_ts=thread_ts)
 
-        # Send message to DigitalOcean Gen AI Agent
+        # Send message to DO Gen AI Agent
         headers = {
             "Authorization": f"Bearer {DO_AI_API_KEY}",
             "Content-Type": "application/json",
         }
-
         payload = {
-            "messages": [
-                {"role": "user", "content": cleaned_text}
-            ]
+            "messages": [{"role": "user", "content": cleaned_text}]
         }
 
         response = requests.post(DO_AI_ENDPOINT, headers=headers, json=payload)
 
         if response.status_code == 200:
             response_data = response.json()
-            ai_reply = response_data.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
-            say(text=ai_reply + " ☁️", thread_ts=thread_ts)
+            content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            reply = classify_response(content or "I'm not sure how to respond.")
+            say(text=reply, thread_ts=thread_ts)
         else:
             error_msg = f":warning: Error contacting AI Agent: {response.status_code} {response.reason}"
             logging.error(f"{error_msg} — Response: {response.text}")
@@ -66,7 +78,7 @@ def handle_app_mention(body, say):
 
     except Exception as e:
         logging.exception("Unhandled exception in app_mention handler.")
-        say(text=":warning: Oops! Something went wrong. A People Team member will follow up. ☁️", thread_ts=thread_ts)
+        say(text=":warning: Oops! Something went wrong. A People Team member will follow up. :cloud:", thread_ts=thread_ts)
 
 # Slack events route
 @flask_app.route("/slack/events", methods=["POST"])
