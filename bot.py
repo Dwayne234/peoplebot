@@ -24,28 +24,26 @@ handler = SlackRequestHandler(app)
 flask_app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-def classify_response(content):
-    """Add emojis based on AI response content"""
-    lower = content.lower()
-    if "i'm not sure" in lower or "unsure" in lower:
-        return ":speech_balloon: " + content + " :cloud:"
-    elif "please contact" in lower or "human" in lower or "escalate" in lower:
-        return ":zap: " + content + " :cloud:"
-    elif "congratulations" in lower or "thank you" in lower:
-        return ":confetti_ball: " + content + " :cloud:"
-    elif "policy" in lower or "benefit" in lower:
-        return ":page_facing_up: " + content + " :cloud:"
+# Classify message for emoji
+def classify_emoji(content):
+    content = content.lower()
+    if "i'm not sure" in content or "unsure" in content:
+        return "speech_balloon"
+    elif "please contact" in content or "human" in content or "escalate" in content:
+        return "zap"
+    elif "congratulations" in content or "thank you" in content:
+        return "confetti_ball"
+    elif "policy" in content or "benefit" in content:
+        return "page_facing_up"
     else:
-        return ":a: " + content + " :cloud:"
+        return "a"
 
 @app.event("app_mention")
-def handle_app_mention(body, say):
+def handle_app_mention(body, say, client):
     try:
         user = body["event"]["user"]
         thread_ts = body["event"].get("thread_ts") or body["event"]["ts"]
         raw_text = body["event"]["text"]
-
-        # Clean bot mention from message text
         bot_user_id = body["authorizations"][0]["user_id"]
         cleaned_text = re.sub(f"<@{bot_user_id}>", "", raw_text).strip()
 
@@ -55,7 +53,6 @@ def handle_app_mention(body, say):
 
         say(text=":mag: Processing your request...", thread_ts=thread_ts)
 
-        # Send message to DO Gen AI Agent
         headers = {
             "Authorization": f"Bearer {DO_AI_API_KEY}",
             "Content-Type": "application/json",
@@ -68,9 +65,16 @@ def handle_app_mention(body, say):
 
         if response.status_code == 200:
             response_data = response.json()
-            content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            reply = classify_response(content or "I'm not sure how to respond.")
-            say(text=reply, thread_ts=thread_ts)
+            content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
+            posted = say(text=content, thread_ts=thread_ts)
+
+            # React to the message
+            emoji = classify_emoji(content)
+            client.reactions_add(
+                channel=body["event"]["channel"],
+                name=emoji,
+                timestamp=posted["ts"]
+            )
         else:
             error_msg = f":warning: Error contacting AI Agent: {response.status_code} {response.reason}"
             logging.error(f"{error_msg} — Response: {response.text}")
